@@ -14,6 +14,9 @@ type Source = {
   pageEnd: number | null;
   similarity: number;
 };
+// 答えに、太字の記号(**)などが混ざっても、そのまま見えないようにする
+const plain = (t: string) => t.replace(/\*\*/g, "").replace(/^#+\s*/gm, "");
+
 type Result = { answer: string; sources: Source[] };
 
 function LoginForm() {
@@ -105,7 +108,7 @@ function AskForm() {
         <>
           <div className="card">
             <h2 style={{ marginTop: 0 }}>答え</h2>
-            <p className="answer">{result.answer}</p>
+            <p className="answer">{plain(result.answer)}</p>
           </div>
           <div className="card">
             <h2 style={{ marginTop: 0 }}>探した章(上位{result.sources.length}件)</h2>

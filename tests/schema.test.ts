@@ -146,3 +146,73 @@ describe("schema.sql", () => {
     ).rejects.toThrow(/check/);
   });
 });
+
+describe("監査ログ(query_logs)", () => {
+  const CHUNK_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  const CHUNK_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+
+  async function asService(sql: string, params: unknown[] = []) {
+    await db.exec("reset role; set role service_role;");
+    try {
+      return await db.query(sql, params);
+    } finally {
+      await db.exec("reset role;");
+    }
+  }
+
+  it("管理用の鍵(サーバー)は、ログを書ける・読める", async () => {
+    await asService(
+      "insert into query_logs (user_id, user_department, query, retrieved_chunk_ids, channel) values ($1, '人事', '質問A', $2::uuid[], 'web')",
+      [HR, `{${CHUNK_A},${CHUNK_B}}`],
+    );
+    const r = await asService("select user_id, user_department, query, retrieved_chunk_ids, channel, created_at from query_logs");
+    expect(r.rows).toHaveLength(1);
+    const row = r.rows[0] as any;
+    expect(row.user_id).toBe(HR);
+    expect(row.query).toBe("質問A");
+    expect(row.retrieved_chunk_ids).toEqual([CHUNK_A, CHUNK_B]);
+    expect(row.created_at).toBeTruthy();
+  });
+
+  it("ログインしている人でも、ログを読めない・書けない・書き換えられない(自分のログも)", async () => {
+    await expect(asUser(HR, "select * from query_logs")).rejects.toThrow(/permission denied/);
+    await expect(asUser(HR, "insert into query_logs (user_id, query) values ($1, 'x')", [HR])).rejects.toThrow(/permission denied/);
+    await expect(asUser(HR, "update query_logs set query = 'x'")).rejects.toThrow(/permission denied/);
+    await expect(asUser(HR, "delete from query_logs")).rejects.toThrow(/permission denied/);
+  });
+
+  it("ログインしていない人(anon)も、触れない", async () => {
+    await expect(asUser(null, "select * from query_logs")).rejects.toThrow(/permission denied/);
+  });
+
+  it("チャンネルは web か slack だけ。質問が空(null)のログは作れない", async () => {
+    await expect(asService("insert into query_logs (query, channel) values ('x', 'email')")).rejects.toThrow();
+    await expect(asService("insert into query_logs (query) values (null)")).rejects.toThrow();
+  });
+
+  it("ユーザーを消しても、ログは残る(user_id が null になる)", async () => {
+    const GONE = "00000000-0000-0000-0000-0000000000d4";
+    await db.exec(`insert into auth.users values ('${GONE}', 'gone@example.com')`);
+    await asService("insert into query_logs (user_id, query) values ($1, '消えるユーザーの質問')", [GONE]);
+    await db.exec(`delete from auth.users where id = '${GONE}'`);
+    const r = await asService("select user_id from query_logs where query = '消えるユーザーの質問'");
+    expect(r.rows).toEqual([{ user_id: null }]);
+  });
+
+  it("ガバナンス手順: 削除した文書のチャンクIDを、ログから消せる(redact)", async () => {
+    await asService(
+      "update query_logs set retrieved_chunk_ids = array_remove(retrieved_chunk_ids, $1::uuid) where $1::uuid = any(retrieved_chunk_ids)",
+      [CHUNK_A],
+    );
+    const r = await asService("select retrieved_chunk_ids from query_logs where query = '質問A'");
+    expect((r.rows[0] as any).retrieved_chunk_ids).toEqual([CHUNK_B]);
+  });
+
+  it("月次集計の SQL が、部署ごとの件数を返す", async () => {
+    const r = await asService(
+      `select coalesce(user_department, '(不明)') as dept, count(*)::int as n
+         from query_logs where created_at >= date_trunc('month', now()) group by 1 order by 2 desc`,
+    );
+    expect(r.rows.length).toBeGreaterThan(0);
+  });
+});

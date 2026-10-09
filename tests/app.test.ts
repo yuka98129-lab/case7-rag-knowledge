@@ -71,6 +71,9 @@ describe("prompts", () => {
     expect(buildUserMessage("Q?", [])).toContain("(参考資料はありません)");
     expect(buildUserMessage("Q?", [chunk()])).toContain("質問: Q?");
   });
+  it("システムプロンプトに、Markdown記号を使わないルールが入っている", () => {
+    expect(SYSTEM_PROMPT).toContain("Markdown");
+  });
   it("システムプロンプトに、出典と「該当なし」のルールが入っている", () => {
     expect(SYSTEM_PROMPT).toContain("出典:");
     expect(SYSTEM_PROMPT).toContain(NOT_FOUND_MESSAGE);

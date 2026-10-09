@@ -3,7 +3,8 @@ import { ConfigError } from "@/lib/env";
 import { EmbeddingError, embedTexts } from "@/lib/embed";
 import { LlmError, answerWithClaude } from "@/lib/llm";
 import { retrieve } from "@/lib/retrieve";
-import { authenticate } from "@/lib/supabase-server";
+import { AuditError, departmentsOf, writeQueryLog } from "@/lib/audit";
+import { adminClient, authenticate } from "@/lib/supabase-server";
 
 export const maxDuration = 60;
 
@@ -20,6 +21,16 @@ export async function POST(req: Request) {
 
     const [embedding] = await embedTexts([question]);
     const chunks = await retrieve(session.client, embedding); // ← ログインした人の権限で検索(部署の制限が効く)
+
+    // 監査ログ: 検索のあと、回答を作る前に保存する。保存できなければ、回答は返さない(ログに残らない回答を出さない)
+    await writeQueryLog(adminClient(), {
+      userId: session.user.id,
+      userDepartment: await departmentsOf(session.client, session.user.id),
+      query: question,
+      retrievedChunkIds: chunks.map((c) => c.id),
+      channel: "web",
+    });
+
     const answer = await answerWithClaude(question, chunks);
 
     return NextResponse.json({
@@ -40,7 +51,7 @@ export async function POST(req: Request) {
 }
 
 function errorResponse(e: unknown) {
-  if (e instanceof ConfigError || e instanceof EmbeddingError || e instanceof LlmError)
+  if (e instanceof ConfigError || e instanceof EmbeddingError || e instanceof LlmError || e instanceof AuditError)
     return NextResponse.json({ error: e.message }, { status: 500 });
   console.error(e);
   return NextResponse.json({ error: (e as Error).message || "エラーが出ました。" }, { status: 500 });
